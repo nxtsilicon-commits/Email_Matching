@@ -1,0 +1,6 @@
+{
+  "name": "Name & Email Matching Tool",
+  "description": "A clean, responsive tool to upload email and name files, select matching percentage ranges, view matched results, and download matched files.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
