@@ -45,20 +45,31 @@ async def upload_files(
     # 3. Parse Names File
     names_filename, names_df, names_cols, names_rows = await parse_uploaded_file(names_file, "names_file")
 
-    # 4. Column Detection for Email File
+    # 4. Column Detection & Auto-Swap if files were uploaded in reversed order
     detected_email_col = detect_email_column(email_cols)
+    detected_name_col = detect_name_column(names_cols)
+
+    if not detected_email_col or not detected_name_col:
+        swapped_email_col = detect_email_column(names_cols)
+        swapped_name_col = detect_name_column(email_cols)
+        if swapped_email_col and swapped_name_col:
+            # Swap metadata for response
+            email_filename, names_filename = names_filename, email_filename
+            email_cols, names_cols = names_cols, email_cols
+            email_rows, names_rows = names_rows, email_rows
+            detected_email_col = swapped_email_col
+            detected_name_col = swapped_name_col
+
     if not detected_email_col:
         raise HTTPException(
             status_code=400,
-            detail="Email column could not be identified."
+            detail="Email column could not be identified in the Email file. Supported names: 'E-mail', 'email', 'email address'."
         )
 
-    # 5. Column Detection for Names File
-    detected_name_col = detect_name_column(names_cols)
     if not detected_name_col:
         raise HTTPException(
             status_code=400,
-            detail="Name column could not be identified."
+            detail="Name column could not be identified in the Names file. Supported names: 'user_name', 'Name', 'username'."
         )
 
     # 6. Return response summary
@@ -77,3 +88,4 @@ async def upload_files(
             detected_column=detected_name_col,
         ),
     )
+

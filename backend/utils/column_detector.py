@@ -6,17 +6,22 @@ EMAIL_CANDIDATES = [
     "email address",
     "email_address",
     "e-mail",
+    "e_mail",
     "mail",
+    "matched email",
 ]
 
 NAME_CANDIDATES = [
     "name",
+    "user_name",
+    "username",
+    "user name",
     "full name",
     "fullname",
-    "user name",
-    "username",
+    "user name (fb)",
     "first name",
     "person name",
+    "name_col",
 ]
 
 
@@ -24,8 +29,8 @@ def normalize_column_name(col: str) -> str:
     """
     Normalize column names for comparison:
     - Lowercase
-    - Replace hyphens, underscores, and multiple spaces with a single space
-    - Strip leading/trailing whitespace
+    - Strip whitespace
+    - Remove extra spaces, underscores, and hyphens for matching
     """
     if not col:
         return ""
@@ -33,7 +38,7 @@ def normalize_column_name(col: str) -> str:
     # Replace hyphens and underscores with space
     col_str = re.sub(r"[\-_]+", " ", col_str)
     # Collapse multiple spaces into a single space
-    col_str = re.sub(r"\s+", " ", col_str)
+    col_str = re.sub(r"\s+", " ", col_str).strip()
     return col_str
 
 
@@ -44,13 +49,13 @@ def detect_email_column(columns: List[str]) -> Optional[str]:
     """
     normalized_candidates = [normalize_column_name(c) for c in EMAIL_CANDIDATES]
 
-    # Exact match check first
+    # 1. Exact normalized match check first
     for orig_col in columns:
         norm_col = normalize_column_name(orig_col)
         if norm_col in normalized_candidates:
             return orig_col
 
-    # Partial / substring match check if exact match not found
+    # 2. Partial / substring match check if exact match not found
     for orig_col in columns:
         norm_col = normalize_column_name(orig_col)
         if any(cand in norm_col for cand in ["email", "mail"]):
@@ -66,16 +71,17 @@ def detect_name_column(columns: List[str]) -> Optional[str]:
     """
     normalized_candidates = [normalize_column_name(c) for c in NAME_CANDIDATES]
 
-    # Exact match check first
+    # 1. Exact normalized match check first
     for orig_col in columns:
         norm_col = normalize_column_name(orig_col)
         if norm_col in normalized_candidates:
             return orig_col
 
-    # Partial / substring match check
+    # 2. Substring match check for name or user
     for orig_col in columns:
         norm_col = normalize_column_name(orig_col)
         if any(cand in norm_col for cand in ["name", "user"]):
             return orig_col
 
     return None
+

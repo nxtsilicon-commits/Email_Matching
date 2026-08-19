@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 
 try:
-    from rapidfuzz import fuzz
+    from rapidfuzz import fuzz, process
     HAS_RAPIDFUZZ = True
 except ImportError:
     import difflib
@@ -14,10 +14,10 @@ except ImportError:
 def normalize_text(text: Any) -> str:
     """
     Normalize text for comparison:
-    - Uppercase/lowercase differences -> lowercase
+    - Lowercase
     - Trim leading/trailing spaces
-    - Remove diacritics/accents (e.g., 'å' -> 'a', 'é' -> 'e')
-    - Normalize hyphens, underscores, dots to spaces
+    - Remove diacritics/accents (e.g., 'å' -> 'a', 'æ' -> 'ae', 'ø' -> 'o', 'é' -> 'e')
+    - Replace hyphens, underscores, dots, commas with space
     - Collapse multiple spaces to single space
     """
     if text is None or pd.isna(text):
@@ -25,11 +25,15 @@ def normalize_text(text: Any) -> str:
     s = str(text).strip().lower()
     if not s:
         return ""
-    # Unicode NFD decomposition to remove accents
+
+    # Replace specific Scandinavian / special characters cleanly
+    s = s.replace("æ", "ae").replace("ø", "o").replace("å", "a").replace("ß", "ss")
+
+    # Unicode NFD decomposition to remove remaining accents
     s = unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode("utf-8")
     # Replace punctuation / delimiters with space
     s = re.sub(r"[\-_._,]+", " ", s)
-    # Collapse spaces
+    # Collapse multiple spaces
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -37,33 +41,50 @@ def normalize_text(text: Any) -> str:
 def normalize_email(email: Any) -> str:
     """
     Normalize email address:
-    - Convert to lowercase
-    - Trim leading/trailing whitespace
+    - Lowercase
+    - Trim whitespace
     """
     if email is None or pd.isna(email):
         return ""
     return str(email).strip().lower()
 
 
-def compute_similarity_ratio(s1: str, s2: str) -> float:
+def compute_name_similarity_score(name1: str, name2: str, **kwargs) -> int:
     """
-    Compute standard similarity ratio (0.0 to 1.0) between two normalized strings.
-    Uses rapidfuzz token_set_ratio and ratio if available, else difflib.
+    Compute similarity percentage score (0 to 100) between two names.
+    - If normalized names are equal -> 100
+    - Checks initial + last name matching (e.g. 'Randi Nilsen' vs 'r nilsen' -> 92)
+    - Uses max of ratio, token_set_ratio, token_sort_ratio, WRatio, partial_ratio
     """
-    if not s1 or not s2:
-        return 0.0
-    if s1 == s2:
-        return 1.0
+    norm1 = normalize_text(name1)
+    norm2 = normalize_text(name2)
+
+    if not norm1 or not norm2:
+        return 0
+
+    if norm1 == norm2:
+        return 100
+
+    # Initial + Last name check (e.g. "Randi Nilsen" vs "r nilsen")
+    t1 = norm1.split()
+    t2 = norm2.split()
+    init_score = 0
+    if len(t1) >= 2 and len(t2) >= 2:
+        if (t1[0][0] == t2[0][0] and t1[-1] == t2[-1]) or (t2[0][0] == t1[0][0] and t2[-1] == t1[-1]):
+            init_score = 92
 
     if HAS_RAPIDFUZZ:
-        r1 = fuzz.ratio(s1, s2) / 100.0
-        r2 = fuzz.token_set_ratio(s1, s2) / 100.0
-        r3 = fuzz.token_sort_ratio(s1, s2) / 100.0
-        return max(r1, r2, r3)
+        r1 = fuzz.ratio(norm1, norm2)
+        r2 = fuzz.token_set_ratio(norm1, norm2)
+        r3 = fuzz.token_sort_ratio(norm1, norm2)
+        r4 = fuzz.WRatio(norm1, norm2)
+        r5 = fuzz.partial_ratio(norm1, norm2) if len(min(norm1, norm2, key=len)) >= 4 else 0
+        return int(round(max(r1, r2, r3, r4, r5, init_score)))
     else:
-        # Fallback to difflib
         import difflib
-        return difflib.SequenceMatcher(None, s1, s2).ratio()
+        ratio = difflib.SequenceMatcher(None, norm1, norm2).ratio()
+        return int(round(max(ratio * 100, init_score)))
+
 
 
 def calculate_match_score(
@@ -72,77 +93,13 @@ def calculate_match_score(
     target_name_in_email_df: Optional[str] = None,
     target_email_in_names_df: Optional[str] = None,
 ) -> int:
-    """
-    Calculate confidence match percentage (0 to 100) for a candidate (Name, Email) pair.
-    
-    Formula strategy:
-    1. Exact Email Match (if email is present in both files and normalized equal) -> 100%
-    2. Exact Name Match (if target name in email file equals name in names file after normalization) -> 100%
-    3. Exact Name-to-Email-Username Match -> 100%
-    4. Substring & Token Containment (e.g. "John Smith" vs "john.smith@gmail.com") -> 95-99%
-    5. First Initial + Last Name Match (e.g. "J Smith" vs "jsmith@gmail.com") -> 90-95%
-    6. Standard Fuzzy String Ratio (Levenshtein / Token Set Ratio) -> scaled 0-100%
-    """
-    norm_name = normalize_text(raw_name)
-    norm_email = normalize_email(raw_email)
-
-    if not norm_name or not norm_email:
-        return 0
-
-    # Extract username part before '@'
-    email_user_raw = norm_email.split("@")[0] if "@" in norm_email else norm_email
-    norm_email_user = normalize_text(email_user_raw)
-
-    # 1. Exact Email Match (if email was also present in names file)
-    if target_email_in_names_df:
-        norm_target_email = normalize_email(target_email_in_names_df)
-        if norm_target_email and norm_target_email == norm_email:
-            return 100
-
-    # 2. Exact Name Match (if target name column exists in email file)
+    """Backward-compatible score calculator wrapper."""
     if target_name_in_email_df:
-        norm_target_name = normalize_text(target_name_in_email_df)
-        if norm_target_name and norm_target_name == norm_name:
-            return 100
-
-    # 3. Exact Name-to-Email-Username Match
-    if norm_name == norm_email_user:
-        return 100
-
-    # Concatenated name without spaces
-    name_concat = norm_name.replace(" ", "")
-    email_user_concat = norm_email_user.replace(" ", "")
-
-    if name_concat == email_user_concat:
-        return 100
-
-    # Email username without trailing digits
-    email_user_nodigits = re.sub(r"\d+", "", email_user_concat)
-    if name_concat == email_user_nodigits:
-        return 98
-
-    # 4. Token-based analysis
-    name_tokens = norm_name.split()
-    if len(name_tokens) >= 2:
-        first_name = name_tokens[0]
-        last_name = name_tokens[-1]
-
-        # First + Last name both present in email username
-        if first_name in norm_email_user and last_name in norm_email_user:
-            # Check length proportion
-            ratio = len(first_name + last_name) / max(1, len(email_user_nodigits))
-            return int(min(99, max(90, ratio * 100)))
-
-        # First initial + Last name (e.g. "j" + "smith" -> "jsmith")
-        initial_last = first_name[0] + last_name
-        if initial_last == email_user_nodigits or norm_email_user.startswith(initial_last):
-            return 92
-
-    # 5. Fuzzy ratio
-    sim_ratio = compute_similarity_ratio(norm_name, norm_email_user)
-    fuzzy_percent = int(round(sim_ratio * 100))
-
-    return min(100, max(0, fuzzy_percent))
+        score = compute_name_similarity_score(raw_name, target_name_in_email_df)
+        if score > 0:
+            return score
+    email_user = raw_email.split("@")[0] if "@" in raw_email else raw_email
+    return compute_name_similarity_score(raw_name, email_user)
 
 
 def perform_matching(
@@ -154,59 +111,140 @@ def perform_matching(
     to_percentage: float = 50.0,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Performs duplicate-prevented matching between names_df and email_df.
-    
-    Processing Rules:
-    - Generates candidate scores for all pairs between to_percentage and from_percentage.
-    - Sorts candidates descending by Match % (highest confidence first).
-    - Locks row indices ('names_idx', 'email_idx') so once a record is matched at a higher score,
-      it is NEVER matched again at a lower score.
-    - Dynamically preserves original columns from input files.
-    - Returns results sorted descending by Match %.
+    Performs fast, accurate duplicate-prevented matching between names_df (Names File)
+    and email_df (Email/Excel File).
+
+    Supports:
+    - Case A: Names file contains both name and email -> Dual comparison
+    - Case B: Names file contains name only (e.g. CSV user_name) -> Name-to-Name comparison against Excel Name column or Email Username.
+
+    Optimized for large files (50,000+ rows) using:
+    1. Exact normalized name & email username hash indexing (O(1) lookup for 100% matches)
+    2. RapidFuzz vectorized candidate extraction for fuzzy matches
+    3. Strict 1-to-1 row locking (highest Match % selected first)
     """
-    # Validate columns exist
+    # 1. Validate required columns in respective DataFrames
     if name_col not in names_df.columns:
         raise ValueError(f"Name column '{name_col}' not found in Names DataFrame.")
     if email_col not in email_df.columns:
         raise ValueError(f"Email column '{email_col}' not found in Email DataFrame.")
 
-    # Check optional cross-columns
-    names_email_col = next((c for c in names_df.columns if "email" in c.lower() or "mail" in c.lower()), None)
-    email_name_col = next((c for c in email_df.columns if "name" in c.lower() or "user" in c.lower()), None)
+    # Check if Excel DataFrame also has a Name column
+    excel_name_col = next(
+        (c for c in email_df.columns if normalize_text(c) in ["name", "user name", "username", "full name", "person name"]),
+        None,
+    )
+    if not excel_name_col:
+        excel_name_col = next((c for c in email_df.columns if "name" in c.lower() or "user" in c.lower()), None)
+
+    # Check if Names DataFrame also has an Email column
+    names_email_col = next(
+        (c for c in names_df.columns if "email" in c.lower() or "mail" in c.lower()),
+        None,
+    )
+
+    is_case_a = names_email_col is not None and bool(names_df[names_email_col].astype(str).str.strip().any())
+
+    # Pre-extract Excel normalized values
+    # Inverted index for exact normalized names/usernames: norm_text -> list of excel_idx
+    exact_excel_text_map: Dict[str, List[int]] = {}
+    # Inverted index for exact normalized emails: norm_email -> list of excel_idx
+    exact_excel_email_map: Dict[str, List[int]] = {}
+
+    for e_idx, e_row in email_df.iterrows():
+        raw_email = str(e_row[email_col]) if pd.notna(e_row[email_col]) else ""
+        norm_e_mail = normalize_email(raw_email)
+
+        # Extract name from Excel Name column if present
+        raw_name = str(e_row[excel_name_col]) if excel_name_col and pd.notna(e_row[excel_name_col]) else ""
+        norm_e_name = normalize_text(raw_name)
+
+        # Extract username from email
+        email_user_raw = norm_e_mail.split("@")[0] if "@" in norm_e_mail else norm_e_mail
+        norm_e_user = normalize_text(email_user_raw)
+
+        if norm_e_name:
+            exact_excel_text_map.setdefault(norm_e_name, []).append(e_idx)
+        if norm_e_user and norm_e_user != norm_e_name:
+            exact_excel_text_map.setdefault(norm_e_user, []).append(e_idx)
+        if norm_e_mail:
+            exact_excel_email_map.setdefault(norm_e_mail, []).append(e_idx)
+
+    # List of unique non-empty Excel normalized text keys for fuzzy extraction
+    unique_excel_text_keys = list(exact_excel_text_map.keys())
 
     candidates = []
 
-    # 1. Candidate Generation
+    # 2. Candidate Generation
     for n_idx, n_row in names_df.iterrows():
-        raw_name = n_row[name_col]
-        target_email = n_row[names_email_col] if names_email_col else None
+        raw_csv_name = str(n_row[name_col]) if pd.notna(n_row[name_col]) else ""
+        norm_csv_name = normalize_text(raw_csv_name)
 
-        for e_idx, e_row in email_df.iterrows():
-            raw_email = e_row[email_col]
-            target_name = e_row[email_name_col] if email_name_col else None
+        if not norm_csv_name:
+            continue
 
-            score = calculate_match_score(
-                raw_name=str(raw_name or ""),
-                raw_email=str(raw_email or ""),
-                target_name_in_email_df=str(target_name) if target_name else None,
-                target_email_in_names_df=str(target_email) if target_email else None,
-            )
+        raw_csv_email = str(n_row[names_email_col]) if is_case_a and pd.notna(n_row[names_email_col]) else ""
+        norm_csv_email = normalize_email(raw_csv_email)
 
-            # Filter within [to_percentage, from_percentage] range
-            if to_percentage <= score <= from_percentage:
-                candidates.append({
-                    "score": score,
-                    "names_idx": n_idx,
-                    "email_idx": e_idx,
-                    "names_row": n_row,
-                    "email_row": e_row,
-                })
+        matched_excel_indices_for_n = set()
 
-    # 2. Sort Candidates Descending by Match % (Highest Confidence First)
-    # Tiers: score descending, then row indices for deterministic stability
+        # Step 2a: Exact Normalized Name or Username Match (100%)
+        if norm_csv_name in exact_excel_text_map:
+            for e_idx in exact_excel_text_map[norm_csv_name]:
+                if from_percentage >= 100 >= to_percentage:
+                    candidates.append({
+                        "score": 100,
+                        "names_idx": n_idx,
+                        "email_idx": e_idx,
+                    })
+                    matched_excel_indices_for_n.add(e_idx)
+
+        # Step 2b: Exact Email Match (if Case A)
+        if is_case_a and norm_csv_email and norm_csv_email in exact_excel_email_map:
+            for e_idx in exact_excel_email_map[norm_csv_email]:
+                if e_idx not in matched_excel_indices_for_n:
+                    if from_percentage >= 100 >= to_percentage:
+                        candidates.append({
+                            "score": 100,
+                            "names_idx": n_idx,
+                            "email_idx": e_idx,
+                        })
+                        matched_excel_indices_for_n.add(e_idx)
+
+        # Step 2c: Fuzzy Matching for names that did not have an exact 100% match
+        if not matched_excel_indices_for_n and unique_excel_text_keys:
+            if HAS_RAPIDFUZZ:
+                matches = process.extract(
+                    query=norm_csv_name,
+                    choices=unique_excel_text_keys,
+                    scorer=compute_name_similarity_score,
+                    score_cutoff=float(to_percentage),
+                    limit=5,
+                )
+                for choice_name, score_val, _ in matches:
+                    score = int(round(score_val))
+                    if to_percentage <= score <= from_percentage:
+                        for e_idx in exact_excel_text_map[choice_name]:
+                            candidates.append({
+                                "score": score,
+                                "names_idx": n_idx,
+                                "email_idx": e_idx,
+                            })
+            else:
+                for norm_key, e_indices in exact_excel_text_map.items():
+                    score = compute_name_similarity_score(norm_csv_name, norm_key)
+                    if to_percentage <= score <= from_percentage:
+                        for e_idx in e_indices:
+                            candidates.append({
+                                "score": score,
+                                "names_idx": n_idx,
+                                "email_idx": e_idx,
+                            })
+
+    # 3. Sort Candidates Descending by Match % (Highest Confidence First)
     candidates.sort(key=lambda c: (c["score"], -c["names_idx"], -c["email_idx"]), reverse=True)
 
-    # 3. Mandatory Duplicate Prevention (Locking matched row indices)
+    # 4. Mandatory One-to-One Duplicate Prevention (Row Index Locking)
     matched_results: List[Dict[str, Any]] = []
     used_names_indices = set()
     used_email_indices = set()
@@ -215,18 +253,17 @@ def perform_matching(
         n_idx = cand["names_idx"]
         e_idx = cand["email_idx"]
 
-        # Skip if either row has already been matched at a higher score
+        # Skip if either CSV or Excel record was already matched at a higher score
         if n_idx in used_names_indices or e_idx in used_email_indices:
             continue
 
-        # Lock record indices
         used_names_indices.add(n_idx)
         used_email_indices.add(e_idx)
 
-        # 4. Construct Result Record with preserved original columns
-        n_row = cand["names_row"]
-        e_row = cand["email_row"]
+        n_row = names_df.loc[n_idx]
+        e_row = email_df.loc[e_idx]
 
+        # Standard result columns expected by frontend/export
         record: Dict[str, Any] = {
             "name": str(n_row[name_col]),
             "email": str(e_row[email_col]),

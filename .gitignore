@@ -17,3 +17,5 @@ backend/venv/
 .pytest_cache/
 .venv/
 venv/
+test_data/
+

@@ -59,19 +59,31 @@ async def match_files(
     email_filename, email_df, email_cols, email_rows = await parse_uploaded_file(email_file, "email_file")
     names_filename, names_df, names_cols, names_rows = await parse_uploaded_file(names_file, "names_file")
 
-    # 4. Column Detection
+    # 4. Column Detection & Auto-Swap if files were uploaded in reversed order
     detected_email_col = detect_email_column(email_cols)
+    detected_name_col = detect_name_column(names_cols)
+
+    # Check if files were uploaded in reversed order
+    if not detected_email_col or not detected_name_col:
+        swapped_email_col = detect_email_column(names_cols)
+        swapped_name_col = detect_name_column(email_cols)
+        if swapped_email_col and swapped_name_col:
+            # Swap DataFrames and columns
+            email_df, names_df = names_df, email_df
+            email_cols, names_cols = names_cols, email_cols
+            detected_email_col = swapped_email_col
+            detected_name_col = swapped_name_col
+
     if not detected_email_col:
         raise HTTPException(
             status_code=400,
-            detail="Email column could not be identified."
+            detail="Email column could not be identified in the Email file. Expected column names like 'E-mail', 'email', 'email address'."
         )
 
-    detected_name_col = detect_name_column(names_cols)
     if not detected_name_col:
         raise HTTPException(
             status_code=400,
-            detail="Name column could not be identified."
+            detail="Name column could not be identified in the Names file. Expected column names like 'user_name', 'Name', 'username'."
         )
 
     # 5. Perform Matching Logic
@@ -100,3 +112,4 @@ async def match_files(
         matching_range=stats["matching_range"],
         results=results,
     )
+
