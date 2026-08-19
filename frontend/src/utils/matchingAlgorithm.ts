@@ -143,7 +143,7 @@ export function calculateNameEmailMatchScore(fullName: string, email: string): n
   return Math.min(100, Math.max(0, percent));
 }
 
-// Match all names against emails within percentage bounds
+// Match all names against emails within percentage bounds using high-speed O(N) hash indexing
 export function performMatching(
   namesRecords: Record<string, any>[],
   emailRecords: Record<string, any>[],
@@ -153,8 +153,8 @@ export function performMatching(
 ): MatchRecord[] {
   const results: MatchRecord[] = [];
 
-  // Helper to find column if not provided
   const findCol = (row: Record<string, any>, candidates: string[]): string => {
+    if (!row) return '';
     const keys = Object.keys(row);
     for (const cand of candidates) {
       const found = keys.find(k => k.toLowerCase().includes(cand.toLowerCase()));
@@ -169,56 +169,119 @@ export function performMatching(
   const resolvedNameCol = nameColumn || findCol(sampleNameRow, ['user name (fb)', 'user name', 'name', 'fb_name', 'fullname']);
   const resolvedCountryCol = findCol(sampleNameRow, ['country', 'nation', 'location', 'region']);
   const resolvedEmailCol = emailColumn || findCol(sampleEmailRow, ['email address', 'email', 'mail', 'e-mail']);
+  const resolvedExcelNameCol = findCol(sampleEmailRow, ['name', 'user name', 'username', 'fullname']);
 
-    const resolvedExcelNameCol = findCol(sampleEmailRow, ['name', 'user name', 'username', 'fullname']);
-    let idCounter = 1;
+  // 1. Build O(1) Inverted Index for Exact Matches & First-letter Candidate Buckets
+  const exactMap = new Map<string, { email: string; row: Record<string, any> }[]>();
+  const firstLetterMap = new Map<string, string[]>();
 
-    for (const nameRow of namesRecords) {
-      const rawName = String(nameRow[resolvedNameCol] || '').trim();
-      if (!rawName) continue;
+  for (const emailRow of emailRecords) {
+    const rawEmail = String(emailRow[resolvedEmailCol] || '').trim();
+    if (!rawEmail) continue;
 
-      const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
+    const excelName = resolvedExcelNameCol && emailRow[resolvedExcelNameCol] ? String(emailRow[resolvedExcelNameCol]) : '';
+    const normEmailUser = normalizeString(extractEmailUser(rawEmail));
+    const normExcelName = normalizeString(excelName);
 
-      let bestEmail = '';
-      let bestScore = -1;
+    const recordObj = { email: rawEmail, row: emailRow };
 
-      for (const emailRow of emailRecords) {
-        const rawEmail = String(emailRow[resolvedEmailCol] || '').trim();
-        if (!rawEmail) continue;
+    if (normExcelName) {
+      if (!exactMap.has(normExcelName)) exactMap.set(normExcelName, []);
+      exactMap.get(normExcelName)!.push(recordObj);
 
-        const excelName = resolvedExcelNameCol && emailRow[resolvedExcelNameCol] ? String(emailRow[resolvedExcelNameCol]) : '';
-
-        let score = calculateNameEmailMatchScore(rawName, rawEmail);
-
-        if (excelName) {
-          const normRawName = normalizeString(rawName);
-          const normExcelName = normalizeString(excelName);
-          if (normRawName && normRawName === normExcelName) {
-            score = 100;
-          } else if (excelName) {
-            const nameScore = calculateNameEmailMatchScore(rawName, excelName + '@domain.com');
-            score = Math.max(score, nameScore);
-          }
+      const firstChar = normExcelName.charAt(0);
+      if (firstChar) {
+        if (!firstLetterMap.has(firstChar)) firstLetterMap.set(firstChar, []);
+        if (!firstLetterMap.get(firstChar)!.includes(normExcelName)) {
+          firstLetterMap.get(firstChar)!.push(normExcelName);
         }
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestEmail = rawEmail;
-        }
-      }
-
-      // Check if score falls within user selected matching range
-      if (bestScore >= range.minPercent && bestScore <= range.maxPercent && bestEmail) {
-        results.push({
-          id: idCounter++,
-          userName: rawName,
-          country: country,
-          matchedEmail: bestEmail,
-          matchPercentage: bestScore,
-          originalName: rawName,
-        });
       }
     }
+
+    if (normEmailUser && normEmailUser !== normExcelName) {
+      if (!exactMap.has(normEmailUser)) exactMap.set(normEmailUser, []);
+      exactMap.get(normEmailUser)!.push(recordObj);
+
+      const firstChar = normEmailUser.charAt(0);
+      if (firstChar) {
+        if (!firstLetterMap.has(firstChar)) firstLetterMap.set(firstChar, []);
+        if (!firstLetterMap.get(firstChar)!.includes(normEmailUser)) {
+          firstLetterMap.get(firstChar)!.push(normEmailUser);
+        }
+      }
+    }
+  }
+
+  const usedEmailIndices = new Set<string>();
+  const matchedCsvNames = new Set<string>();
+  let idCounter = 1;
+
+  // 2. Exact Matches First (100% Score) in O(1) Time
+  for (const nameRow of namesRecords) {
+    const rawName = String(nameRow[resolvedNameCol] || '').trim();
+    if (!rawName) continue;
+
+    const normCsvName = normalizeString(rawName);
+    const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
+
+    if (exactMap.has(normCsvName)) {
+      const candidates = exactMap.get(normCsvName)!;
+      for (const cand of candidates) {
+        if (!usedEmailIndices.has(cand.email)) {
+          usedEmailIndices.add(cand.email);
+          matchedCsvNames.add(rawName);
+          results.push({
+            id: idCounter++,
+            userName: rawName,
+            country: country,
+            matchedEmail: cand.email,
+            matchPercentage: 100,
+            originalName: rawName,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Fast Candidate Search for Unmatched Names (Fuzzy)
+  for (const nameRow of namesRecords) {
+    const rawName = String(nameRow[resolvedNameCol] || '').trim();
+    if (!rawName || matchedCsvNames.has(rawName)) continue;
+
+    const normCsvName = normalizeString(rawName);
+    const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
+    const firstChar = normCsvName.charAt(0);
+
+    const targetKeys = firstLetterMap.get(firstChar) || [];
+    let bestEmail = '';
+    let bestScore = -1;
+
+    for (const key of targetKeys) {
+      const candList = exactMap.get(key) || [];
+      for (const cand of candList) {
+        if (usedEmailIndices.has(cand.email)) continue;
+
+        const score = calculateNameEmailMatchScore(rawName, cand.email);
+        if (score > bestScore) {
+          bestScore = score;
+          bestEmail = cand.email;
+        }
+      }
+    }
+
+    if (bestScore >= range.minPercent && bestScore <= range.maxPercent && bestEmail) {
+      usedEmailIndices.add(bestEmail);
+      results.push({
+        id: idCounter++,
+        userName: rawName,
+        country: country,
+        matchedEmail: bestEmail,
+        matchPercentage: bestScore,
+        originalName: rawName,
+      });
+    }
+  }
 
   // Sort results descending by match percentage, then alphabetically by name
   return results.sort((a, b) => b.matchPercentage - a.matchPercentage || a.userName.localeCompare(b.userName));
