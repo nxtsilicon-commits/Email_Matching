@@ -29,6 +29,8 @@ export interface MatchApiResponse {
   results: BackendMatchRecord[];
 }
 
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
 /**
  * Sends Email File and Names File to the backend API endpoint POST /api/upload.
  */
@@ -40,7 +42,7 @@ export async function uploadFilesToBackend(
   formData.append('email_file', emailFile);
   formData.append('names_file', namesFile);
 
-  const response = await fetch('/api/upload', {
+  const response = await fetch(`${API_BASE}/api/upload`, {
     method: 'POST',
     body: formData,
   });
@@ -69,7 +71,7 @@ export async function matchFilesToBackend(
   formData.append('from_percentage', fromPercentage.toString());
   formData.append('to_percentage', toPercentage.toString());
 
-  const response = await fetch('/api/match', {
+  const response = await fetch(`${API_BASE}/api/match`, {
     method: 'POST',
     body: formData,
   });
@@ -90,7 +92,7 @@ export async function downloadMatchedResultsFromBackend(
   format: 'csv' | 'xlsx',
   filenameStem: string = 'matched_results'
 ): Promise<void> {
-  const response = await fetch(`/api/download?format=${format}`);
+  const response = await fetch(`${API_BASE}/api/download?format=${format}`);
 
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
