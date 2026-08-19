@@ -171,6 +171,7 @@ export function performMatching(
   const resolvedEmailCol = emailColumn || findCol(sampleEmailRow, ['email address', 'email', 'mail', 'e-mail']);
 
     const resolvedExcelNameCol = findCol(sampleEmailRow, ['name', 'user name', 'username', 'fullname']);
+    let idCounter = 1;
 
     for (const nameRow of namesRecords) {
       const rawName = String(nameRow[resolvedNameCol] || '').trim();
