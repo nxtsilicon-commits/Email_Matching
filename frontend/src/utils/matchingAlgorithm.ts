@@ -170,41 +170,54 @@ export function performMatching(
   const resolvedCountryCol = findCol(sampleNameRow, ['country', 'nation', 'location', 'region']);
   const resolvedEmailCol = emailColumn || findCol(sampleEmailRow, ['email address', 'email', 'mail', 'e-mail']);
 
-  let idCounter = 1;
+    const resolvedExcelNameCol = findCol(sampleEmailRow, ['name', 'user name', 'username', 'fullname']);
 
-  for (const nameRow of namesRecords) {
-    const rawName = String(nameRow[resolvedNameCol] || '').trim();
-    if (!rawName) continue;
+    for (const nameRow of namesRecords) {
+      const rawName = String(nameRow[resolvedNameCol] || '').trim();
+      if (!rawName) continue;
 
-    const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
+      const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
 
-    let bestEmail = '';
-    let bestScore = -1;
+      let bestEmail = '';
+      let bestScore = -1;
 
-    for (const emailRow of emailRecords) {
-      const rawEmail = String(emailRow[resolvedEmailCol] || '').trim();
-      if (!rawEmail || !rawEmail.includes('@')) continue;
+      for (const emailRow of emailRecords) {
+        const rawEmail = String(emailRow[resolvedEmailCol] || '').trim();
+        if (!rawEmail) continue;
 
-      const score = calculateNameEmailMatchScore(rawName, rawEmail);
+        const excelName = resolvedExcelNameCol && emailRow[resolvedExcelNameCol] ? String(emailRow[resolvedExcelNameCol]) : '';
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestEmail = rawEmail;
+        let score = calculateNameEmailMatchScore(rawName, rawEmail);
+
+        if (excelName) {
+          const normRawName = normalizeString(rawName);
+          const normExcelName = normalizeString(excelName);
+          if (normRawName && normRawName === normExcelName) {
+            score = 100;
+          } else if (excelName) {
+            const nameScore = calculateNameEmailMatchScore(rawName, excelName + '@domain.com');
+            score = Math.max(score, nameScore);
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestEmail = rawEmail;
+        }
+      }
+
+      // Check if score falls within user selected matching range
+      if (bestScore >= range.minPercent && bestScore <= range.maxPercent && bestEmail) {
+        results.push({
+          id: idCounter++,
+          userName: rawName,
+          country: country,
+          matchedEmail: bestEmail,
+          matchPercentage: bestScore,
+          originalName: rawName,
+        });
       }
     }
-
-    // Check if score falls within user selected matching range
-    if (bestScore >= range.minPercent && bestScore <= range.maxPercent && bestEmail) {
-      results.push({
-        id: idCounter++,
-        userName: rawName,
-        country: country,
-        matchedEmail: bestEmail,
-        matchPercentage: bestScore,
-        originalName: rawName,
-      });
-    }
-  }
 
   // Sort results descending by match percentage, then alphabetically by name
   return results.sort((a, b) => b.matchPercentage - a.matchPercentage || a.userName.localeCompare(b.userName));

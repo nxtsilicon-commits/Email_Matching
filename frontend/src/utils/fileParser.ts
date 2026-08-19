@@ -61,15 +61,22 @@ export async function parseUploadedFile(file: File): Promise<UploadedFileInfo> {
   });
 }
 
-// Convert UploadedFileInfo into a File object for API submission
+// Convert UploadedFileInfo into an optimized File object for API submission
 export function getFileFromUploadedInfo(info: UploadedFileInfo): File {
+  if (info.file && info.file.name.endsWith('.csv') && info.file.size < 4000000) {
+    return info.file;
+  }
+  if (info.records && info.records.length > 0) {
+    const worksheet = XLSX.utils.json_to_sheet(info.records);
+    const csvContent = XLSX.utils.sheet_to_csv(worksheet);
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const stem = (info.fileName || 'data').replace(/\.[^/.]+$/, '');
+    return new File([blob], `${stem}.csv`, { type: 'text/csv' });
+  }
   if (info.file) {
     return info.file;
   }
-  const worksheet = XLSX.utils.json_to_sheet(info.records);
-  const csvContent = XLSX.utils.sheet_to_csv(worksheet);
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  return new File([blob], info.fileName || 'data.csv', { type: 'text/csv' });
+  return new File([], 'empty.csv', { type: 'text/csv' });
 }
 
 // Export matched results as CSV file

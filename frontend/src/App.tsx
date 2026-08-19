@@ -20,6 +20,8 @@ import {
   getSampleNamesFileInfo,
 } from './utils/sampleData';
 
+import { performMatching as performClientMatching } from './utils/matchingAlgorithm';
+
 export default function App() {
   // State for uploaded files
   const [emailFile, setEmailFile] = useState<UploadedFileInfo | null>(null);
@@ -94,7 +96,7 @@ export default function App() {
     setMatchingStats(null);
   };
 
-  // Execute matching algorithm via backend API POST /api/match
+  // Execute matching algorithm via backend API POST /api/match with client fallback
   const handleStartMatching = async () => {
     setAlert(null);
 
@@ -131,7 +133,7 @@ export default function App() {
       return;
     }
 
-    // Begin matching process with backend API call
+    // Begin matching process
     setMatchingState('matching');
     const startTime = performance.now();
 
@@ -139,30 +141,48 @@ export default function App() {
       const eFile = getFileFromUploadedInfo(emailFile);
       const nFile = getFileFromUploadedInfo(namesFile);
 
-      const apiResponse = await matchFilesToBackend(
-        eFile,
-        nFile,
-        matchingRange.maxPercent,
-        matchingRange.minPercent
-      );
+      let formattedRecords: MatchRecord[] = [];
+      let totalProcessed = 0;
+      let totalMatched = 0;
+
+      try {
+        const apiResponse = await matchFilesToBackend(
+          eFile,
+          nFile,
+          matchingRange.maxPercent,
+          matchingRange.minPercent
+        );
+        formattedRecords = apiResponse.results.map((r, i) => ({
+          id: i + 1,
+          userName: r.name || r['User Name (FB)'] || r['User Name'] || r['Name'] || '',
+          country: r.Country || r['country'] || r['Nation'] || 'Norway',
+          matchedEmail: r.email || r['Matched Email'] || r['Email'] || '',
+          matchPercentage: r.match_percentage,
+          ...r,
+        }));
+        totalProcessed = apiResponse.total_records_processed;
+        totalMatched = apiResponse.total_matched_records;
+      } catch (backendErr: any) {
+        console.warn('Backend API unreachable, executing client matching fallback:', backendErr.message);
+        formattedRecords = performClientMatching(
+          namesFile.records,
+          emailFile.records,
+          matchingRange,
+          namesFile.detectedColumn,
+          emailFile.detectedColumn
+        );
+        totalProcessed = namesFile.rowCount;
+        totalMatched = formattedRecords.length;
+      }
 
       const endTime = performance.now();
       const duration = Math.round(endTime - startTime);
 
-      const formattedRecords: MatchRecord[] = apiResponse.results.map((r, i) => ({
-        id: i + 1,
-        userName: r.name || r['User Name (FB)'] || r['User Name'] || r['Name'] || '',
-        country: r.Country || r['country'] || r['Nation'] || 'Norway',
-        matchedEmail: r.email || r['Matched Email'] || r['Email'] || '',
-        matchPercentage: r.match_percentage,
-        ...r,
-      }));
-
       setMatchedResults(formattedRecords);
       setMatchingStats({
-        totalProcessed: apiResponse.total_records_processed,
-        totalMatched: apiResponse.total_matched_records,
-        matchingRange: `From ${apiResponse.matching_range.from}% to ${apiResponse.matching_range.to}%`,
+        totalProcessed,
+        totalMatched,
+        matchingRange: `From ${matchingRange.maxPercent}% to ${matchingRange.minPercent}%`,
         durationMs: duration,
       });
       setMatchingState('completed');
