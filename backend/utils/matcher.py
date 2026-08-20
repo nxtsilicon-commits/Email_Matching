@@ -86,7 +86,6 @@ def compute_name_similarity_score(name1: str, name2: str, **kwargs) -> int:
         return int(round(max(ratio * 100, init_score)))
 
 
-
 def calculate_match_score(
     raw_name: str,
     raw_email: str,
@@ -112,16 +111,13 @@ def perform_matching(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Performs fast, accurate duplicate-prevented matching between names_df (Names File)
-    and email_df (Email/Excel File).
+    and email_df (Email/Excel File) for ANY user-selected matching range [to_percentage, from_percentage].
 
-    Supports:
-    - Case A: Names file contains both name and email -> Dual comparison
-    - Case B: Names file contains name only (e.g. CSV user_name) -> Name-to-Name comparison against Excel Name column or Email Username.
-
-    Optimized for large files (50,000+ rows) using:
-    1. Exact normalized name & email username hash indexing (O(1) lookup for 100% matches)
-    2. RapidFuzz vectorized candidate extraction for fuzzy matches
-    3. Strict 1-to-1 row locking (highest Match % selected first)
+    True Matching Range Logic:
+    - Generates candidate pairs for any similarity score where: to_percentage <= score <= from_percentage
+    - Sorts candidates descending by Match % (highest confidence within the range first)
+    - Applies strict 1-to-1 row locking (used_names_indices, used_email_indices)
+    - Dynamically preserves original columns from input files
     """
     # 1. Validate required columns in respective DataFrames
     if name_col not in names_df.columns:
@@ -145,21 +141,17 @@ def perform_matching(
 
     is_case_a = names_email_col is not None and bool(names_df[names_email_col].astype(str).str.strip().any())
 
-    # Pre-extract Excel normalized values
-    # Inverted index for exact normalized names/usernames: norm_text -> list of excel_idx
+    # Pre-extract Excel normalized values and build inverted indexes
     exact_excel_text_map: Dict[str, List[int]] = {}
-    # Inverted index for exact normalized emails: norm_email -> list of excel_idx
     exact_excel_email_map: Dict[str, List[int]] = {}
 
     for e_idx, e_row in email_df.iterrows():
         raw_email = str(e_row[email_col]) if pd.notna(e_row[email_col]) else ""
         norm_e_mail = normalize_email(raw_email)
 
-        # Extract name from Excel Name column if present
         raw_name = str(e_row[excel_name_col]) if excel_name_col and pd.notna(e_row[excel_name_col]) else ""
         norm_e_name = normalize_text(raw_name)
 
-        # Extract username from email
         email_user_raw = norm_e_mail.split("@")[0] if "@" in norm_e_mail else norm_e_mail
         norm_e_user = normalize_text(email_user_raw)
 
@@ -170,12 +162,22 @@ def perform_matching(
         if norm_e_mail:
             exact_excel_email_map.setdefault(norm_e_mail, []).append(e_idx)
 
-    # List of unique non-empty Excel normalized text keys for fuzzy extraction
     unique_excel_text_keys = list(exact_excel_text_map.keys())
 
-    candidates = []
+    # Build token and first-char bucket index for candidate filtering
+    candidate_buckets: Dict[str, List[str]] = {}
+    for key in unique_excel_text_keys:
+        tokens = key.split()
+        for tok in tokens:
+            if len(tok) >= 2:
+                candidate_buckets.setdefault(tok, []).append(key)
+        if key:
+            candidate_buckets.setdefault(f"c:{key[0]}", []).append(key)
 
-    # 2. Candidate Generation
+    candidates = []
+    seen_pairs = set()
+
+    # 2. Broad Candidate Generation for the selected range [to_percentage, from_percentage]
     for n_idx, n_row in names_df.iterrows():
         raw_csv_name = str(n_row[name_col]) if pd.notna(n_row[name_col]) else ""
         norm_csv_name = normalize_text(raw_csv_name)
@@ -186,60 +188,79 @@ def perform_matching(
         raw_csv_email = str(n_row[names_email_col]) if is_case_a and pd.notna(n_row[names_email_col]) else ""
         norm_csv_email = normalize_email(raw_csv_email)
 
-        matched_excel_indices_for_n = set()
-
-        # Step 2a: Exact Normalized Name or Username Match (100%)
+        # 2a. Check Exact Normalized Name or Username Match (100%)
         if norm_csv_name in exact_excel_text_map:
-            for e_idx in exact_excel_text_map[norm_csv_name]:
-                if from_percentage >= 100 >= to_percentage:
-                    candidates.append({
-                        "score": 100,
-                        "names_idx": n_idx,
-                        "email_idx": e_idx,
-                    })
-                    matched_excel_indices_for_n.add(e_idx)
-
-        # Step 2b: Exact Email Match (if Case A)
-        if is_case_a and norm_csv_email and norm_csv_email in exact_excel_email_map:
-            for e_idx in exact_excel_email_map[norm_csv_email]:
-                if e_idx not in matched_excel_indices_for_n:
-                    if from_percentage >= 100 >= to_percentage:
+            if to_percentage <= 100 <= from_percentage:
+                for e_idx in exact_excel_text_map[norm_csv_name]:
+                    pair_key = (n_idx, e_idx)
+                    if pair_key not in seen_pairs:
+                        seen_pairs.add(pair_key)
                         candidates.append({
                             "score": 100,
                             "names_idx": n_idx,
                             "email_idx": e_idx,
                         })
-                        matched_excel_indices_for_n.add(e_idx)
 
-        # Step 2c: Fuzzy Matching for names that did not have an exact 100% match
-        if not matched_excel_indices_for_n and unique_excel_text_keys:
+        # 2b. Check Exact Email Match (if Case A, 100%)
+        if is_case_a and norm_csv_email and norm_csv_email in exact_excel_email_map:
+            if to_percentage <= 100 <= from_percentage:
+                for e_idx in exact_excel_email_map[norm_csv_email]:
+                    pair_key = (n_idx, e_idx)
+                    if pair_key not in seen_pairs:
+                        seen_pairs.add(pair_key)
+                        candidates.append({
+                            "score": 100,
+                            "names_idx": n_idx,
+                            "email_idx": e_idx,
+                        })
+
+        # 2c. Broad Fuzzy Candidate Search using candidate buckets
+        # Gather choices matching any token or starting character of norm_csv_name
+        search_choices_set = set()
+        tokens = norm_csv_name.split()
+        for tok in tokens:
+            if len(tok) >= 2 and tok in candidate_buckets:
+                search_choices_set.update(candidate_buckets[tok])
+        if norm_csv_name and f"c:{norm_csv_name[0]}" in candidate_buckets:
+            search_choices_set.update(candidate_buckets[f"c:{norm_csv_name[0]}"])
+
+        # Fallback to full choice list if bucket set is small
+        search_choices = list(search_choices_set) if len(search_choices_set) > 0 else unique_excel_text_keys
+
+        if search_choices:
             if HAS_RAPIDFUZZ:
                 matches = process.extract(
                     query=norm_csv_name,
-                    choices=unique_excel_text_keys,
-                    scorer=compute_name_similarity_score,
+                    choices=search_choices,
+                    scorer=fuzz.WRatio,
                     score_cutoff=float(to_percentage),
-                    limit=5,
+                    limit=10,
                 )
                 for choice_name, score_val, _ in matches:
                     score = int(round(score_val))
                     if to_percentage <= score <= from_percentage:
                         for e_idx in exact_excel_text_map[choice_name]:
-                            candidates.append({
-                                "score": score,
-                                "names_idx": n_idx,
-                                "email_idx": e_idx,
-                            })
+                            pair_key = (n_idx, e_idx)
+                            if pair_key not in seen_pairs:
+                                seen_pairs.add(pair_key)
+                                candidates.append({
+                                    "score": score,
+                                    "names_idx": n_idx,
+                                    "email_idx": e_idx,
+                                })
             else:
-                for norm_key, e_indices in exact_excel_text_map.items():
+                for norm_key in search_choices:
                     score = compute_name_similarity_score(norm_csv_name, norm_key)
                     if to_percentage <= score <= from_percentage:
-                        for e_idx in e_indices:
-                            candidates.append({
-                                "score": score,
-                                "names_idx": n_idx,
-                                "email_idx": e_idx,
-                            })
+                        for e_idx in exact_excel_text_map[norm_key]:
+                            pair_key = (n_idx, e_idx)
+                            if pair_key not in seen_pairs:
+                                seen_pairs.add(pair_key)
+                                candidates.append({
+                                    "score": score,
+                                    "names_idx": n_idx,
+                                    "email_idx": e_idx,
+                                })
 
     # 3. Sort Candidates Descending by Match % (Highest Confidence First)
     candidates.sort(key=lambda c: (c["score"], -c["names_idx"], -c["email_idx"]), reverse=True)
@@ -263,7 +284,6 @@ def perform_matching(
         n_row = names_df.loc[n_idx]
         e_row = email_df.loc[e_idx]
 
-        # Standard result columns expected by frontend/export
         record: Dict[str, Any] = {
             "name": str(n_row[name_col]),
             "email": str(e_row[email_col]),
@@ -284,6 +304,7 @@ def perform_matching(
     stats = {
         "total_records_processed": len(names_df),
         "total_matched_records": len(matched_results),
+        "total_candidates_found": len(candidates),
         "matching_range": {
             "from": int(from_percentage),
             "to": int(to_percentage),

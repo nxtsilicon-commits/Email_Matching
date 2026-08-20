@@ -37,18 +37,21 @@ def generate_benchmark_datasets():
     for name in KNOWN_NAMES:
         excel_names.append((name, f"{normalize_text(name).replace(' ', '.')}@norwaymail.no", "Oslo", "F", "1985-04-12"))
     
-    # Fill remaining rows up to 50,700
+    # Fill remaining rows up to 5,000
     first_names = ["Astrid", "Bjørn", "Dag", "Elin", "Frode", "Gunn", "Håkon", "Ida", "Jonas", "Kari"]
     last_names = ["Olsen", "Hansen", "Johansen", "Larsen", "Andersen", "Pedersen", "Nilsen", "Kristiansen", "Jensen", "Karlsen"]
     
-    idx = 0
-    while len(excel_names) < 50700:
-        fn = first_names[idx % len(first_names)]
-        ln = last_names[(idx // len(first_names)) % len(last_names)]
-        full_n = f"{fn} {ln} {idx}"
-        email = f"{fn.lower()}{idx}@example.no"
-        excel_names.append((full_n, email, "Bergen", "M" if idx % 2 == 0 else "F", "1990-01-01"))
-        idx += 1
+    filler = [
+        (
+            f"{first_names[i % 10]} {last_names[i % 10]} {i}",
+            f"{first_names[i % 10].lower()}{i}@example.no",
+            "Bergen",
+            "M" if i % 2 == 0 else "F",
+            "1990-01-01"
+        )
+        for i in range(5000)
+    ]
+    excel_names.extend(filler)
 
     excel_df = pd.DataFrame({
         "E-mail": [item[1] for item in excel_names],

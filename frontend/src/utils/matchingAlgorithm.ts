@@ -212,11 +212,10 @@ export function performMatching(
     }
   }
 
-  const usedEmailIndices = new Set<string>();
-  const matchedCsvNames = new Set<string>();
-  let idCounter = 1;
+  // 2. Broad Candidate Search for Range [range.minPercent, range.maxPercent]
+  const candidates: { score: number; rawName: string; country: string; email: string }[] = [];
+  const seenPairs = new Set<string>();
 
-  // 2. Exact Matches First (100% Score) in O(1) Time
   for (const nameRow of namesRecords) {
     const rawName = String(nameRow[resolvedNameCol] || '').trim();
     if (!rawName) continue;
@@ -224,65 +223,67 @@ export function performMatching(
     const normCsvName = normalizeString(rawName);
     const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
 
+    // Check exact matches (100% score)
     if (exactMap.has(normCsvName)) {
-      const candidates = exactMap.get(normCsvName)!;
-      for (const cand of candidates) {
-        if (!usedEmailIndices.has(cand.email)) {
-          usedEmailIndices.add(cand.email);
-          matchedCsvNames.add(rawName);
-          results.push({
-            id: idCounter++,
-            userName: rawName,
-            country: country,
-            matchedEmail: cand.email,
-            matchPercentage: 100,
-            originalName: rawName,
-          });
-          break;
+      if (range.minPercent <= 100 && 100 <= range.maxPercent) {
+        const candList = exactMap.get(normCsvName)!;
+        for (const cand of candList) {
+          const pairKey = `${rawName}:::${cand.email}`;
+          if (!seenPairs.has(pairKey)) {
+            seenPairs.add(pairKey);
+            candidates.push({
+              score: 100,
+              rawName,
+              country,
+              email: cand.email,
+            });
+          }
+        }
+      }
+    }
+
+    // Check fuzzy candidate keys for scores within range
+    for (const [key, candList] of exactMap.entries()) {
+      const score = calculateNameEmailMatchScore(rawName, key + '@domain.com');
+      if (score >= range.minPercent && score <= range.maxPercent) {
+        for (const cand of candList) {
+          const pairKey = `${rawName}:::${cand.email}`;
+          if (!seenPairs.has(pairKey)) {
+            seenPairs.add(pairKey);
+            candidates.push({
+              score,
+              rawName,
+              country,
+              email: cand.email,
+            });
+          }
         }
       }
     }
   }
 
-  // 3. Fast Candidate Search for Unmatched Names (Fuzzy)
-  for (const nameRow of namesRecords) {
-    const rawName = String(nameRow[resolvedNameCol] || '').trim();
-    if (!rawName || matchedCsvNames.has(rawName)) continue;
+  // Sort candidates descending by match percentage
+  candidates.sort((a, b) => b.score - a.score);
 
-    const normCsvName = normalizeString(rawName);
-    const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
-    const firstChar = normCsvName.charAt(0);
+  // Apply one-to-one row index / email locking
+  const usedEmails = new Set<string>();
+  const usedNames = new Set<string>();
+  let idCounter = 1;
 
-    const targetKeys = firstLetterMap.get(firstChar) || [];
-    let bestEmail = '';
-    let bestScore = -1;
+  for (const cand of candidates) {
+    if (usedNames.has(cand.rawName) || usedEmails.has(cand.email)) continue;
+    usedNames.add(cand.rawName);
+    usedEmails.add(cand.email);
 
-    for (const key of targetKeys) {
-      const candList = exactMap.get(key) || [];
-      for (const cand of candList) {
-        if (usedEmailIndices.has(cand.email)) continue;
-
-        const score = calculateNameEmailMatchScore(rawName, cand.email);
-        if (score > bestScore) {
-          bestScore = score;
-          bestEmail = cand.email;
-        }
-      }
-    }
-
-    if (bestScore >= range.minPercent && bestScore <= range.maxPercent && bestEmail) {
-      usedEmailIndices.add(bestEmail);
-      results.push({
-        id: idCounter++,
-        userName: rawName,
-        country: country,
-        matchedEmail: bestEmail,
-        matchPercentage: bestScore,
-        originalName: rawName,
-      });
-    }
+    results.push({
+      id: idCounter++,
+      userName: cand.rawName,
+      country: cand.country,
+      matchedEmail: cand.email,
+      matchPercentage: cand.score,
+      originalName: cand.rawName,
+    });
   }
 
-  // Sort results descending by match percentage, then alphabetically by name
   return results.sort((a, b) => b.matchPercentage - a.matchPercentage || a.userName.localeCompare(b.userName));
 }
