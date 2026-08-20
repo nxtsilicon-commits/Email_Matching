@@ -143,7 +143,7 @@ export function calculateNameEmailMatchScore(fullName: string, email: string): n
   return Math.min(100, Math.max(0, percent));
 }
 
-// Match all names against emails within percentage bounds using high-speed O(N) hash indexing
+// Match all names against emails within percentage bounds using high-speed bucket indexing
 export function performMatching(
   namesRecords: Record<string, any>[],
   emailRecords: Record<string, any>[],
@@ -171,9 +171,9 @@ export function performMatching(
   const resolvedEmailCol = emailColumn || findCol(sampleEmailRow, ['email address', 'email', 'mail', 'e-mail']);
   const resolvedExcelNameCol = findCol(sampleEmailRow, ['name', 'user name', 'username', 'fullname']);
 
-  // 1. Build O(1) Inverted Index for Exact Matches & First-letter Candidate Buckets
+  // 1. Build Inverted Index & Fast Candidate Buckets (by First-Character & Tokens)
   const exactMap = new Map<string, { email: string; row: Record<string, any> }[]>();
-  const firstLetterMap = new Map<string, string[]>();
+  const bucketMap = new Map<string, string[]>();
 
   for (const emailRow of emailRecords) {
     const rawEmail = String(emailRow[resolvedEmailCol] || '').trim();
@@ -184,38 +184,37 @@ export function performMatching(
     const normExcelName = normalizeString(excelName);
 
     const recordObj = { email: rawEmail, row: emailRow };
+    const keysToIndex = [normExcelName, normEmailUser].filter(Boolean);
 
-    if (normExcelName) {
-      if (!exactMap.has(normExcelName)) exactMap.set(normExcelName, []);
-      exactMap.get(normExcelName)!.push(recordObj);
+    for (const key of keysToIndex) {
+      if (!exactMap.has(key)) exactMap.set(key, []);
+      exactMap.get(key)!.push(recordObj);
 
-      const firstChar = normExcelName.charAt(0);
+      // Index key into first-character bucket
+      const firstChar = key.charAt(0);
       if (firstChar) {
-        if (!firstLetterMap.has(firstChar)) firstLetterMap.set(firstChar, []);
-        if (!firstLetterMap.get(firstChar)!.includes(normExcelName)) {
-          firstLetterMap.get(firstChar)!.push(normExcelName);
+        if (!bucketMap.has(firstChar)) bucketMap.set(firstChar, []);
+        if (!bucketMap.get(firstChar)!.includes(key)) {
+          bucketMap.get(firstChar)!.push(key);
         }
       }
-    }
 
-    if (normEmailUser && normEmailUser !== normExcelName) {
-      if (!exactMap.has(normEmailUser)) exactMap.set(normEmailUser, []);
-      exactMap.get(normEmailUser)!.push(recordObj);
-
-      const firstChar = normEmailUser.charAt(0);
-      if (firstChar) {
-        if (!firstLetterMap.has(firstChar)) firstLetterMap.set(firstChar, []);
-        if (!firstLetterMap.get(firstChar)!.includes(normEmailUser)) {
-          firstLetterMap.get(firstChar)!.push(normEmailUser);
+      // Index key into token buckets
+      const tokens = key.split(/[\s._-]+/).filter(t => t.length >= 2);
+      for (const tok of tokens) {
+        const bucketKey = `t:${tok}`;
+        if (!bucketMap.has(bucketKey)) bucketMap.set(bucketKey, []);
+        if (!bucketMap.get(bucketKey)!.includes(key)) {
+          bucketMap.get(bucketKey)!.push(key);
         }
       }
     }
   }
 
-  // 2. Broad Candidate Search for Range [range.minPercent, range.maxPercent]
   const candidates: { score: number; rawName: string; country: string; email: string }[] = [];
   const seenPairs = new Set<string>();
 
+  // 2. Broad Candidate Search for Range [range.minPercent, range.maxPercent]
   for (const nameRow of namesRecords) {
     const rawName = String(nameRow[resolvedNameCol] || '').trim();
     if (!rawName) continue;
@@ -223,7 +222,7 @@ export function performMatching(
     const normCsvName = normalizeString(rawName);
     const country = resolvedCountryCol && nameRow[resolvedCountryCol] ? String(nameRow[resolvedCountryCol]) : 'Norway';
 
-    // Check exact matches (100% score)
+    // 2a. Check Exact Normalized Match (100%)
     if (exactMap.has(normCsvName)) {
       if (range.minPercent <= 100 && 100 <= range.maxPercent) {
         const candList = exactMap.get(normCsvName)!;
@@ -242,10 +241,24 @@ export function performMatching(
       }
     }
 
-    // Check fuzzy candidate keys for scores within range
-    for (const [key, candList] of exactMap.entries()) {
+    // 2b. Gather Candidate Keys using Buckets instead of full 50k table loop!
+    const searchKeys = new Set<string>();
+    const firstChar = normCsvName.charAt(0);
+    if (firstChar && bucketMap.has(firstChar)) {
+      bucketMap.get(firstChar)!.forEach(k => searchKeys.add(k));
+    }
+    const nameTokens = normCsvName.split(/[\s._-]+/).filter(t => t.length >= 2);
+    for (const tok of nameTokens) {
+      if (bucketMap.has(`t:${tok}`)) {
+        bucketMap.get(`t:${tok}`)!.forEach(k => searchKeys.add(k));
+      }
+    }
+
+    // Evaluate scores ONLY for candidates in searchKeys
+    for (const key of searchKeys) {
       const score = calculateNameEmailMatchScore(rawName, key + '@domain.com');
       if (score >= range.minPercent && score <= range.maxPercent) {
+        const candList = exactMap.get(key) || [];
         for (const cand of candList) {
           const pairKey = `${rawName}:::${cand.email}`;
           if (!seenPairs.has(pairKey)) {
@@ -262,10 +275,10 @@ export function performMatching(
     }
   }
 
-  // Sort candidates descending by match percentage
+  // 3. Sort candidates descending by match percentage
   candidates.sort((a, b) => b.score - a.score);
 
-  // Apply one-to-one row index / email locking
+  // 4. One-to-one duplicate locking
   const usedEmails = new Set<string>();
   const usedNames = new Set<string>();
   let idCounter = 1;
