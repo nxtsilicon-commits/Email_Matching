@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ArrowLeftRight } from 'lucide-react';
 import { Header } from './components/Header';
 import { FileUpload } from './components/FileUpload';
 import { MatchingRangeSelector } from './components/MatchingRangeSelector';
@@ -94,6 +95,19 @@ export default function App() {
     setMatchingState('idle');
     setMatchedResults([]);
     setMatchingStats(null);
+  };
+
+  // Swap files between Step 1 and Step 2
+  const handleSwapFiles = () => {
+    setAlert(null);
+    const temp = emailFile;
+    setEmailFile(namesFile);
+    setNamesFile(temp);
+    if (matchingState === 'completed') {
+      setMatchingState('idle');
+      setMatchedResults([]);
+      setMatchingStats(null);
+    }
   };
 
   // Execute matching algorithm via backend API POST /api/match with client fallback
@@ -233,6 +247,26 @@ export default function App() {
         <div className="flex-1 p-4 sm:p-5 md:p-6 space-y-4">
           {/* Error Alert Display */}
           <ErrorAlert alert={alert} onDismiss={() => setAlert(null)} />
+
+          {/* Swap files bar if both files loaded */}
+          {(emailFile || namesFile) && (
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+              <span className="text-xs text-slate-600 font-medium">
+                {emailFile?.selectedColumn?.toLowerCase().includes('name') || namesFile?.selectedColumn?.toLowerCase().includes('email')
+                  ? '💡 Notice: Files may be swapped (Email file contains names or vice versa).'
+                  : 'File Uploads'}
+              </span>
+              <button
+                type="button"
+                onClick={handleSwapFiles}
+                className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-white hover:bg-blue-50 border border-slate-200 px-2.5 py-1 rounded transition-colors shadow-2xs"
+                title="Swap Step 1 and Step 2 files"
+              >
+                <ArrowLeftRight className="w-3.5 h-3.5 text-blue-600" />
+                <span>Swap Step 1 ⇄ Step 2</span>
+              </button>
+            </div>
+          )}
 
           {/* Steps 1 & 2: File Upload Section */}
           <section id="section-file-uploads" className="grid grid-cols-1 sm:grid-cols-2 gap-4">
