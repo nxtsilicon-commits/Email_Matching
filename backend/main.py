@@ -37,6 +37,14 @@ app.include_router(match.router, prefix="/api", tags=["match"])
 app.include_router(download.router, prefix="/api", tags=["download"])
 
 
+from fastapi.responses import RedirectResponse
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "service": "Name & Email Matching Tool API"}
