@@ -63,13 +63,19 @@ export async function matchFilesToBackend(
   emailFile: File,
   namesFile: File,
   fromPercentage: number,
-  toPercentage: number
+  toPercentage: number,
+  emailCol?: string,
+  nameCol?: string,
+  countryCol?: string,
 ): Promise<MatchApiResponse> {
   const formData = new FormData();
   formData.append('email_file', emailFile);
   formData.append('names_file', namesFile);
   formData.append('from_percentage', fromPercentage.toString());
   formData.append('to_percentage', toPercentage.toString());
+  if (emailCol) formData.append('email_col', emailCol);
+  if (nameCol) formData.append('name_col', nameCol);
+  if (countryCol) formData.append('country_col', countryCol);
 
   const response = await fetch(`${API_BASE}/api/match`, {
     method: 'POST',

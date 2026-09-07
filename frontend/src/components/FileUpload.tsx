@@ -11,6 +11,9 @@ interface FileUploadProps {
   onFileSelect: (file: File) => void;
   onFileRemove: () => void;
   isLoading?: boolean;
+  columnLabel?: string;
+  selectedColumn?: string;
+  onColumnChange?: (col: string) => void;
 }
 
 export const FileUpload: React.FC<FileUploadProps> = ({
@@ -22,6 +25,9 @@ export const FileUpload: React.FC<FileUploadProps> = ({
   onFileSelect,
   onFileRemove,
   isLoading = false,
+  columnLabel,
+  selectedColumn,
+  onColumnChange,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -149,6 +155,35 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           </div>
         )}
       </div>
+
+      {fileInfo && fileInfo.headers && fileInfo.headers.length > 0 && onColumnChange && (
+        <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-lg text-left shadow-2xs">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-bold text-slate-700">
+              {columnLabel || 'Select Matching Column'}:
+            </label>
+            {(selectedColumn || fileInfo.detectedColumn) === fileInfo.detectedColumn && (
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-medium border border-emerald-200">
+                Auto-detected
+              </span>
+            )}
+          </div>
+          <select
+            value={selectedColumn || fileInfo.selectedColumn || fileInfo.detectedColumn || fileInfo.headers[0]}
+            onChange={(e) => onColumnChange(e.target.value)}
+            className="w-full text-xs bg-white border border-slate-300 rounded-md px-2.5 py-2 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow"
+          >
+            {fileInfo.headers.map((h) => (
+              <option key={h} value={h}>
+                {h} {h === fileInfo.detectedColumn ? '(Auto-detected)' : ''}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Choose which column in this file to use for matching.
+          </p>
+        </div>
+      )}
     </div>
   );
 };

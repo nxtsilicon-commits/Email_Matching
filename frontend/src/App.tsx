@@ -150,7 +150,9 @@ export default function App() {
           eFile,
           nFile,
           matchingRange.maxPercent,
-          matchingRange.minPercent
+          matchingRange.minPercent,
+          emailFile.selectedColumn || emailFile.detectedColumn,
+          namesFile.selectedColumn || namesFile.detectedColumn
         );
         formattedRecords = apiResponse.results.map((r, i) => ({
           id: i + 1,
@@ -163,16 +165,24 @@ export default function App() {
         totalProcessed = apiResponse.total_records_processed;
         totalMatched = apiResponse.total_matched_records;
       } catch (backendErr: any) {
-        console.warn('Backend API unreachable, executing client matching fallback:', backendErr.message);
-        formattedRecords = performClientMatching(
-          namesFile.records,
-          emailFile.records,
-          matchingRange,
-          namesFile.detectedColumn,
-          emailFile.detectedColumn
-        );
-        totalProcessed = namesFile.rowCount;
-        totalMatched = formattedRecords.length;
+        // Guard: Only run client matching if dataset is tiny (e.g. sample data or <= 2,000 rows)
+        if (namesFile.records && namesFile.records.length > 0 && namesFile.rowCount <= 2000) {
+          console.warn('Backend API unreachable, executing client matching fallback for small dataset:', backendErr.message);
+          formattedRecords = performClientMatching(
+            namesFile.records,
+            emailFile.records,
+            matchingRange,
+            namesFile.selectedColumn || namesFile.detectedColumn,
+            emailFile.selectedColumn || emailFile.detectedColumn
+          );
+          totalProcessed = namesFile.rowCount;
+          totalMatched = formattedRecords.length;
+        } else {
+          // Never run client matching on large files to prevent browser freeze
+          throw new Error(
+            `Server matching error: ${backendErr.message}. Large files must be processed on the server to prevent browser freeze.`
+          );
+        }
       }
 
       const endTime = performance.now();
@@ -237,6 +247,13 @@ export default function App() {
                 setMatchingState('idle');
               }}
               isLoading={isUploading}
+              columnLabel="Mapped Email Column"
+              selectedColumn={emailFile?.selectedColumn || emailFile?.detectedColumn}
+              onColumnChange={(col) => {
+                if (emailFile) {
+                  setEmailFile({ ...emailFile, selectedColumn: col });
+                }
+              }}
             />
 
             <FileUpload
@@ -250,6 +267,13 @@ export default function App() {
                 setMatchingState('idle');
               }}
               isLoading={isUploading}
+              columnLabel="Mapped Name Column"
+              selectedColumn={namesFile?.selectedColumn || namesFile?.detectedColumn}
+              onColumnChange={(col) => {
+                if (namesFile) {
+                  setNamesFile({ ...namesFile, selectedColumn: col });
+                }
+              }}
             />
           </section>
 

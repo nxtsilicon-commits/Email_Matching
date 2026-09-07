@@ -6,6 +6,7 @@ export interface UploadedFileInfo {
   headers: string[];
   records: Record<string, any>[];
   detectedColumn?: string;
+  selectedColumn?: string;
   isSample?: boolean;
 }
 
